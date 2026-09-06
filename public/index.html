@@ -37,7 +37,11 @@
         .btn-danger:hover { background: #4f2838; }
         .btn-success { background: #143b2a; color: #6ee7b7; }
         .btn-success:hover { background: #1a4d36; }
+        .btn-gold { background: #3d3300; color: #ffd700; }
+        .btn-gold:hover { background: #5a4a00; }
         .btn-sm { padding: 0.35rem 1rem; font-size: 0.75rem; }
+        .btn-filter { padding: 0.3rem 0.9rem; font-size: 0.7rem; border-radius: 20px; }
+        .btn-filter.active { outline: 2px solid #fff; outline-offset: 2px; }
         .progress-wrap { margin-top: 1rem; display: none; }
         .progress-wrap.active { display: block; }
         .progress-bar-bg { background: #1a2538; border-radius: 30px; height: 8px; overflow: hidden; margin-top: 0.4rem; }
@@ -45,12 +49,15 @@
         .progress-text { display: flex; justify-content: space-between; font-size: 0.8rem; color: #7a8aa8; }
         .progress-text .status-msg { color: #b0c4e0; }
         .results-wrap { margin-top: 1.5rem; }
-        .results-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.8rem; margin-bottom: 1rem; }
+        .results-header { display: flex; flex-direction: column; gap: 0.8rem; margin-bottom: 1rem; }
+        .results-header .top-row { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.8rem; }
         .results-header .stats { display: flex; gap: 1.2rem; font-size: 0.8rem; color: #7a8aa8; }
         .results-header .stats span { background: #1a2538; padding: 0.2rem 0.8rem; border-radius: 12px; }
         .results-header .stats .valid { color: #6ee7b7; }
         .results-header .stats .invalid { color: #f87171; }
         .results-header .stats .gold { color: #ffd700; }
+        .filter-bar { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+        .filter-bar .label { font-size: 0.7rem; color: #7a8aa8; margin-right: 0.3rem; }
         .results-table-wrap { max-height: 480px; overflow-y: auto; border-radius: 12px; border: 1px solid #1a2538; }
         .results-table-wrap::-webkit-scrollbar { width: 6px; }
         .results-table-wrap::-webkit-scrollbar-track { background: #0d1520; }
@@ -94,7 +101,7 @@
                 </div>
             </div>
 
-            <!-- COMBO PANEL (with Clear Combo button) -->
+            <!-- COMBO PANEL -->
             <div class="card">
                 <div class="card-title">📂 Combo List <span class="count" id="comboCount">0</span></div>
                 <div class="file-drop-zone" id="dropZone">
@@ -108,7 +115,6 @@
                     <button class="btn btn-primary" id="startBtn">▶ Start Checking</button>
                     <button class="btn btn-danger" id="stopBtn" disabled>⏹ Stop</button>
                     <button class="btn btn-success btn-sm" id="exportBtn" disabled>⬇ Export</button>
-                    <!-- 👇 নতুন Combo Clear বাটন -->
                     <button class="btn btn-danger btn-sm" id="clearComboBtn">✕ Clear Combo</button>
                 </div>
                 <div class="progress-wrap" id="progressWrap">
@@ -118,14 +124,25 @@
             </div>
         </div>
 
-        <!-- RESULTS -->
+        <!-- RESULTS PANEL (with Filter & Clear Results) -->
         <div class="card results-wrap">
             <div class="results-header">
-                <div class="card-title" style="margin-bottom:0;">📊 Results <span class="count" id="resultCount">0</span></div>
-                <div class="stats" id="statsBar">
-                    <span class="valid">✓ Valid: <strong id="validCount">0</strong></span>
-                    <span class="invalid">✗ Invalid: <strong id="invalidCount">0</strong></span>
-                    <span class="gold">★ Gold: <strong id="goldCount">0</strong></span>
+                <div class="top-row">
+                    <div class="card-title" style="margin-bottom:0;">📊 Results <span class="count" id="resultCount">0</span></div>
+                    <div class="stats" id="statsBar">
+                        <span class="valid">✓ Valid: <strong id="validCount">0</strong></span>
+                        <span class="invalid">✗ Invalid: <strong id="invalidCount">0</strong></span>
+                        <span class="gold">★ Gold: <strong id="goldCount">0</strong></span>
+                    </div>
+                </div>
+                <div class="filter-bar">
+                    <span class="label">Filter:</span>
+                    <button class="btn btn-sm btn-success btn-filter" id="filterValidBtn">✓ Valid</button>
+                    <button class="btn btn-sm btn-danger btn-filter" id="filterInvalidBtn">✗ Invalid</button>
+                    <button class="btn btn-sm btn-gold btn-filter" id="filterGoldBtn">★ Gold</button>
+                    <button class="btn btn-sm btn-primary btn-filter active" id="filterAllBtn">All</button>
+                    <span style="flex:1;"></span>
+                    <button class="btn btn-sm btn-danger" id="clearResultsBtn">🗑 Clear Results</button>
                 </div>
             </div>
             <div class="results-table-wrap" id="tableWrap">
@@ -155,7 +172,13 @@
         const startBtn = document.getElementById('startBtn');
         const stopBtn = document.getElementById('stopBtn');
         const exportBtn = document.getElementById('exportBtn');
-        const clearComboBtn = document.getElementById('clearComboBtn'); // নতুন
+        const clearComboBtn = document.getElementById('clearComboBtn');
+        const clearResultsBtn = document.getElementById('clearResultsBtn');
+
+        const filterValidBtn = document.getElementById('filterValidBtn');
+        const filterInvalidBtn = document.getElementById('filterInvalidBtn');
+        const filterGoldBtn = document.getElementById('filterGoldBtn');
+        const filterAllBtn = document.getElementById('filterAllBtn');
 
         const progressWrap = document.getElementById('progressWrap');
         const progressBar = document.getElementById('progressBar');
@@ -172,6 +195,7 @@
         let proxies = [];
         let combos = [];
         let results = [];
+        let currentFilter = 'all'; // 'all', 'valid', 'invalid', 'gold'
         let isRunning = false;
         let shouldStop = false;
         let currentIndex = 0;
@@ -180,6 +204,7 @@
         // ─── UI helpers ───
         function updateProxyUI() { const n=proxies.length; proxyCount.textContent=n; proxyCountDisplay.textContent=n; }
         function updateComboUI() { comboCount.textContent = combos.length; }
+        
         function updateResultsUI() {
             const total=results.length, valid=results.filter(r=>r.status==='valid').length;
             const invalid=results.filter(r=>r.status==='invalid'||r.status==='error').length;
@@ -187,15 +212,33 @@
             resultCount.textContent=total; validCount.textContent=valid; invalidCount.textContent=invalid; goldCount.textContent=gold;
             exportBtn.disabled = total===0;
         }
+
         function escHtml(str){ if(!str)return ''; return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
         function renderResults() {
-            if(results.length===0){
-                resultsBody.innerHTML=`<tr><td colspan="3" class="empty-state"><div class="big-icon">🔍</div>No results yet — upload a combo and start checking.</td></tr>`;
+            // ফিল্টার অনুযায়ী ডেটা ফিল্টার করি
+            let displayResults = results;
+            if (currentFilter === 'valid') displayResults = results.filter(r => r.status === 'valid');
+            else if (currentFilter === 'invalid') displayResults = results.filter(r => r.status === 'invalid' || r.status === 'error');
+            else if (currentFilter === 'gold') displayResults = results.filter(r => r.gold === true);
+
+            // ফিল্টার বাটনের active স্টাইল আপডেট
+            document.querySelectorAll('.btn-filter').forEach(btn => btn.classList.remove('active'));
+            if (currentFilter === 'all') filterAllBtn.classList.add('active');
+            else if (currentFilter === 'valid') filterValidBtn.classList.add('active');
+            else if (currentFilter === 'invalid') filterInvalidBtn.classList.add('active');
+            else if (currentFilter === 'gold') filterGoldBtn.classList.add('active');
+
+            if (displayResults.length === 0) {
+                let msg = 'No results to display.';
+                if (results.length > 0 && displayResults.length === 0) msg = `No ${currentFilter} results found.`;
+                resultsBody.innerHTML = `<tr><td colspan="3" class="empty-state"><div class="big-icon">🔍</div>${msg}</td></tr>`;
+                updateResultsUI();
                 return;
             }
-            let html='';
-            for(const r of results){
+
+            let html = '';
+            for (const r of displayResults) {
                 const statusClass = r.status==='valid'?'valid': r.status==='invalid'?'invalid':'error';
                 let statusText = r.status;
                 if(r.error) statusText += ` <span class="error-detail">(${escHtml(r.error)})</span>`;
@@ -249,26 +292,27 @@
         }
         try{ const saved=localStorage.getItem('faphouse_combos'); const fname=localStorage.getItem('faphouse_combo_filename'); if(saved){ const c=JSON.parse(saved); if(Array.isArray(c)&&c.length){ combos=c; updateComboUI(); if(fname) fileName.textContent=fname; } } }catch(_){}
 
-        // ─── ✨ Combo Clear Handler (ঠিক proxy clear এর মত) ───
+        // ─── Combo Clear (শুধু কম্বো ক্লিয়ার, রেজাল্ট থাকবে) ───
         clearComboBtn.addEventListener('click', ()=>{
             combos = [];
             updateComboUI();
             fileName.textContent = 'No file selected';
-            // localStorage থেকে মুছে ফেলি
             try {
                 localStorage.removeItem('faphouse_combos');
                 localStorage.removeItem('faphouse_combo_filename');
             } catch(_) {}
-            // চাইলে results ও ক্লিয়ার করতে পারেন, কিন্তু proxy clear করে results থাকে না – আমরা রেখেছি
-            // কিন্তু combo না থাকলে results অর্থহীন, তাই আমরা results ও ক্লিয়ার করছি
+            // রেজাল্ট ক্লিয়ার করা হচ্ছে না
+        });
+
+        // ─── Clear Results (শুধু রেজাল্ট ক্লিয়ার) ───
+        clearResultsBtn.addEventListener('click', ()=>{
             results = [];
+            currentFilter = 'all';
             renderResults();
-            // progress বার রিসেট
             progressBar.style.width = '0%';
             progressLabel.textContent = '0 / 0';
             statusMsg.textContent = 'Idle';
             progressWrap.classList.remove('active');
-            // start/stop বাটন রিসেট
             if(isRunning) {
                 isRunning = false;
                 shouldStop = true;
@@ -276,6 +320,12 @@
             startBtn.disabled = false;
             stopBtn.disabled = true;
         });
+
+        // ─── Filter Buttons ───
+        filterValidBtn.addEventListener('click', ()=>{ currentFilter = 'valid'; renderResults(); });
+        filterInvalidBtn.addEventListener('click', ()=>{ currentFilter = 'invalid'; renderResults(); });
+        filterGoldBtn.addEventListener('click', ()=>{ currentFilter = 'gold'; renderResults(); });
+        filterAllBtn.addEventListener('click', ()=>{ currentFilter = 'all'; renderResults(); });
 
         // ─── Start / Stop ───
         startBtn.addEventListener('click',startChecking);
