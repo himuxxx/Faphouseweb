@@ -44,6 +44,42 @@ function parseProxy(str) {
   }
 }
 
+// ─── trackingParamsBag বের করার ফাংশন (একাধিক পদ্ধতি) ───
+function extractTrackingParamsBag(html) {
+  // প্যাটার্ন ১: trackingParamsBag\":\"...\"
+  let match = html.match(/trackingParamsBag\\":\\"([^"]+)\\"/);
+  if (match) return match[1];
+
+  // প্যাটার্ন ২: trackingParamsBag":"...
+  match = html.match(/trackingParamsBag\s*:\s*"([^"]+)"/);
+  if (match) return match[1];
+
+  // প্যাটার্ন ৩: trackingParamsBag='...'
+  match = html.match(/trackingParamsBag\s*=\s*'([^']+)'/);
+  if (match) return match[1];
+
+  // প্যাটার্ন ৪: window.__INITIAL_STATE__ বা __NEXT_DATA__ এর মধ্যে খোঁজ
+  const stateMatch = html.match(/<script[^>]*>window\.__INITIAL_STATE__\s*=\s*({[^<]+})<\/script>/);
+  if (stateMatch) {
+    try {
+      const state = JSON.parse(stateMatch[1]);
+      if (state && state.trackingParamsBag) return state.trackingParamsBag;
+    } catch (_) {}
+  }
+
+  const nextMatch = html.match(/<script[^>]*id="__NEXT_DATA__"[^>]*>([^<]+)<\/script>/);
+  if (nextMatch) {
+    try {
+      const data = JSON.parse(nextMatch[1]);
+      if (data && data.props && data.props.pageProps && data.props.pageProps.trackingParamsBag) {
+        return data.props.pageProps.trackingParamsBag;
+      }
+    } catch (_) {}
+  }
+
+  return null;
+}
+
 app.post('/api/check', async (req, res) => {
   try {
     const { username, password, proxy } = req.body;
@@ -54,12 +90,7 @@ app.post('/api/check', async (req, res) => {
     let proxyConfig = null;
     if (proxy) {
       const parsed = parseProxy(proxy);
-      if (parsed) {
-        proxyConfig = parsed;
-        console.log(`[PROXY] Using ${parsed.host}:${parsed.port}`);
-      } else {
-        console.warn(`[PROXY] Invalid format: ${proxy} – skipping`);
-      }
+      if (parsed) proxyConfig = parsed;
     }
 
     const axiosConfig = {
@@ -75,7 +106,7 @@ app.post('/api/check', async (req, res) => {
 
     let debug = { proxyUsed: proxyConfig ? `${proxyConfig.host}:${proxyConfig.port}` : 'none' };
 
-    // Step 1: Get trackingParamsBag
+    // Step 1: Get trackingParamsBag (একাধিক পদ্ধতি)
     let homeResp;
     try {
       homeResp = await axios.get('https://faphouse.com/', axiosConfig);
@@ -89,12 +120,29 @@ app.post('/api/check', async (req, res) => {
 
     const html = homeResp.data;
     debug.homeStatus = homeResp.status;
-    const match = html.match(/trackingParamsBag\\":\\"([^"]+)\\"/);
-    if (!match) {
-      return res.json({ success: false, error: 'trackingParamsBag not found', debug });
+    let trackingParamsBag = extractTrackingParamsBag(html);
+    debug.trackingParamsBag = trackingParamsBag || 'NOT_FOUND';
+
+    // যদি trackingParamsBag না পাওয়া যায়, তাহলে ফাঁকা স্ট্রিং দিয়ে login চেষ্টা করি
+    // অথবা আমরা দ্বিতীয়বার homepage request দিয়ে cookies ধরে রাখি
+    if (!trackingParamsBag) {
+      // দ্বিতীয়বার request দিই (cookies সহ)
+      try {
+        const resp2 = await axios.get('https://faphouse.com/', {
+          ...axiosConfig,
+          headers: {
+            ...axiosConfig.headers,
+            'Cookie': homeResp.headers['set-cookie'] ? homeResp.headers['set-cookie'].join('; ') : ''
+          }
+        });
+        const html2 = resp2.data;
+        trackingParamsBag = extractTrackingParamsBag(html2);
+        debug.trackingParamsBag2 = trackingParamsBag || 'NOT_FOUND';
+      } catch (_) {}
     }
-    const trackingParamsBag = match[1];
-    debug.trackingParamsBag = trackingParamsBag;
+
+    // এখনও না পেলে আমরা login এ ফাঁকা পাঠাব
+    const finalBag = trackingParamsBag || '';
 
     // Step 2: Login
     const loginPayload = {
@@ -102,7 +150,7 @@ app.post('/api/check', async (req, res) => {
       password: password,
       rememberMe: '1',
       recaptcha: '',
-      trackingParamsBag: trackingParamsBag
+      trackingParamsBag: finalBag
     };
 
     const loginHeaders = {
