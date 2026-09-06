@@ -22,7 +22,6 @@ function getRandomUA() {
 
 function parseProxy(str) {
   try {
-    // 1. host:port:user:pass
     const parts = str.split(':');
     if (parts.length === 4) {
       const [host, port, username, password] = parts;
@@ -31,7 +30,6 @@ function parseProxy(str) {
         return { host, port: portNum, protocol: 'http', auth: { username, password } };
       }
     }
-    // 2. URL format
     const url = new URL(str);
     const protocol = url.protocol.replace(':', '');
     const host = url.hostname;
@@ -47,7 +45,6 @@ function parseProxy(str) {
 }
 
 app.post('/api/check', async (req, res) => {
-  // সব error কে JSON রেসপন্সে রূপান্তর করব
   try {
     const { username, password, proxy } = req.body;
     if (!username || !password) {
@@ -74,11 +71,7 @@ app.post('/api/check', async (req, res) => {
         'Connection': 'keep-alive'
       }
     };
-
-    // Add proxy if available
-    if (proxyConfig) {
-      axiosConfig.proxy = proxyConfig;
-    }
+    if (proxyConfig) axiosConfig.proxy = proxyConfig;
 
     let debug = { proxyUsed: proxyConfig ? `${proxyConfig.host}:${proxyConfig.port}` : 'none' };
 
@@ -89,7 +82,7 @@ app.post('/api/check', async (req, res) => {
     } catch (e) {
       return res.json({
         success: false,
-        error: `Failed to fetch homepage: ${e.message}`,
+        error: `Homepage fetch failed: ${e.message}`,
         debug: { ...debug, homeError: e.message }
       });
     }
@@ -98,7 +91,7 @@ app.post('/api/check', async (req, res) => {
     debug.homeStatus = homeResp.status;
     const match = html.match(/trackingParamsBag\\":\\"([^"]+)\\"/);
     if (!match) {
-      return res.json({ success: false, error: 'trackingParamsBag not found in HTML', debug });
+      return res.json({ success: false, error: 'trackingParamsBag not found', debug });
     }
     const trackingParamsBag = match[1];
     debug.trackingParamsBag = trackingParamsBag;
@@ -135,14 +128,13 @@ app.post('/api/check', async (req, res) => {
         { ...axiosConfig, headers: loginHeaders }
       );
     } catch (e) {
-      // যদি proxy বা network error হয়
       let errorMsg = e.message;
       if (e.response) {
-        errorMsg = `HTTP ${e.response.status}: ${e.response.data || ''}`;
+        errorMsg = `HTTP ${e.response.status}: ${typeof e.response.data === 'string' ? e.response.data.substring(0, 200) : JSON.stringify(e.response.data)}`;
         debug.loginErrorStatus = e.response.status;
         debug.loginErrorData = e.response.data;
       } else if (e.request) {
-        errorMsg = 'No response from server (proxy may be dead)';
+        errorMsg = 'No response (proxy dead or network issue)';
       }
       return res.json({
         success: false,
@@ -156,8 +148,11 @@ app.post('/api/check', async (req, res) => {
     debug.loginData = data;
 
     // Check invalid credential
-    if (data && data.message && typeof data.message === 'string' && data.message.toLowerCase().includes('invalid credential')) {
-      return res.json({ success: false, gold: false, error: 'Invalid credential', debug });
+    if (data && data.message && typeof data.message === 'string') {
+      const msg = data.message.toLowerCase();
+      if (msg.includes('invalid credential') || msg.includes('invalid credentials')) {
+        return res.json({ success: false, gold: false, error: 'Invalid credential', debug });
+      }
     }
 
     // Determine success
@@ -184,7 +179,6 @@ app.post('/api/check', async (req, res) => {
     } else if (data && data.subscription && data.subscription.gold === true) {
       hasGold = true;
     } else {
-      // fallback: try profile
       try {
         const token = data.token || (data.user && data.user.token) || '';
         if (token) {
@@ -206,7 +200,6 @@ app.post('/api/check', async (req, res) => {
     return res.json({ success: true, gold: hasGold, debug });
 
   } catch (unexpectedError) {
-    // কোন অপ্রত্যাশিত error (যেমন JSON পার্সিং error)
     console.error('UNEXPECTED ERROR:', unexpectedError);
     return res.status(500).json({
       success: false,
