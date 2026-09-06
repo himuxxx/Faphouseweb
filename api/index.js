@@ -6,14 +6,10 @@ const path = require('path');
 
 const app = express();
 
-// Middleware
 app.use(cors());
 app.use(bodyParser.json());
-
-// স্ট্যাটিক ফাইল (frontend) serve
 app.use(express.static(path.join(__dirname, '../public')));
 
-// ─── Random User-Agent ───
 function getRandomUA() {
   const uas = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -25,19 +21,38 @@ function getRandomUA() {
   return uas[Math.floor(Math.random() * uas.length)];
 }
 
-// ─── Proxy parser ───
+// ✅ আপডেটেড Proxy Parser (এখন host:port:user:pass সাপোর্ট করে)
 function parseProxy(str) {
   try {
+    // 1. চেক করা হচ্ছে ফরম্যাটটি "host:port:user:pass" কিনা
+    const parts = str.split(':');
+    if (parts.length === 4) {
+      const [host, port, username, password] = parts;
+      // পোর্ট নাম্বার ভ্যালিড কিনা চেক
+      const portNum = parseInt(port);
+      if (!isNaN(portNum) && host) {
+        return {
+          host: host,
+          port: portNum,
+          protocol: 'http',  // HTTP প্রক্সি হিসেবে ধরা হচ্ছে
+          auth: { username, password }
+        };
+      }
+    }
+
+    // 2. যদি না হয়, তাহলে স্ট্যান্ডার্ড URL ফরম্যাট চেক (http://user:pass@host:port)
     const url = new URL(str);
     const protocol = url.protocol.replace(':', '');
     const host = url.hostname;
     const port = parseInt(url.port) || (protocol === 'https' ? 443 : 80);
     const auth = url.username ? { username: url.username, password: url.password } : undefined;
+    
     if (protocol === 'http' || protocol === 'https') {
       return { host, port, protocol, auth };
     }
     return null;
-  } catch {
+  } catch (e) {
+    console.warn('Proxy parse error:', str, e.message);
     return null;
   }
 }
@@ -53,7 +68,12 @@ app.post('/api/check', async (req, res) => {
   let proxyConfig = null;
   if (proxy) {
     const parsed = parseProxy(proxy);
-    if (parsed) proxyConfig = parsed;
+    if (parsed) {
+      proxyConfig = parsed;
+      console.log(`✅ Using proxy: ${proxyConfig.host}:${proxyConfig.port}`);
+    } else {
+      console.warn(`⚠️ Invalid proxy format: ${proxy}, skipping...`);
+    }
   }
 
   const axiosConfig = {
@@ -125,7 +145,6 @@ app.post('/api/check', async (req, res) => {
     if (data && data.hasGoldSubscription !== undefined) {
       hasGold = data.hasGoldSubscription === true || data.hasGoldSubscription === 'true';
     } else {
-      // fallback profile check
       try {
         const profileResp = await axios.get('https://faphouse.com/api/user/profile', {
           ...axiosConfig,
@@ -144,6 +163,11 @@ app.post('/api/check', async (req, res) => {
 
   } catch (error) {
     console.error('Check error:', error.message);
+    // error.response দেখলে বুঝবেন আসলে কী সমস্যা (৪০৩, ৪২৯, ইত্যাদি)
+    if (error.response) {
+      console.error('Status:', error.response.status);
+      console.error('Data:', error.response.data);
+    }
     return res.status(500).json({
       success: false,
       gold: false,
@@ -152,10 +176,8 @@ app.post('/api/check', async (req, res) => {
   }
 });
 
-// ─── Root route (serve index.html) ───
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, '../public/index.html'));
 });
 
-// Vercel-এর জন্য export
 module.exports = app;
