@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Faphouse Combo Checker</title>
     <style>
-        /* same as before – your existing CSS */
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Inter', system-ui, sans-serif; background: #0b0e14; color: #e8edf5; min-height: 100vh; display: flex; justify-content: center; padding: 2rem 1rem; }
         .app { max-width: 1200px; width: 100%; }
@@ -84,6 +83,7 @@
         </header>
 
         <div class="grid-2">
+            <!-- PROXY PANEL -->
             <div class="card">
                 <div class="card-title">🌐 Proxies <span class="count" id="proxyCount">0</span></div>
                 <textarea id="proxyInput" placeholder="http://user:pass@host:port&#10;host:port:user:pass&#10;one per line"></textarea>
@@ -94,6 +94,7 @@
                 </div>
             </div>
 
+            <!-- COMBO PANEL (with Clear Combo button) -->
             <div class="card">
                 <div class="card-title">📂 Combo List <span class="count" id="comboCount">0</span></div>
                 <div class="file-drop-zone" id="dropZone">
@@ -107,6 +108,8 @@
                     <button class="btn btn-primary" id="startBtn">▶ Start Checking</button>
                     <button class="btn btn-danger" id="stopBtn" disabled>⏹ Stop</button>
                     <button class="btn btn-success btn-sm" id="exportBtn" disabled>⬇ Export</button>
+                    <!-- 👇 নতুন Combo Clear বাটন -->
+                    <button class="btn btn-danger btn-sm" id="clearComboBtn">✕ Clear Combo</button>
                 </div>
                 <div class="progress-wrap" id="progressWrap">
                     <div class="progress-text"><span class="status-msg" id="statusMsg">Idle</span><span id="progressLabel">0 / 0</span></div>
@@ -115,6 +118,7 @@
             </div>
         </div>
 
+        <!-- RESULTS -->
         <div class="card results-wrap">
             <div class="results-header">
                 <div class="card-title" style="margin-bottom:0;">📊 Results <span class="count" id="resultCount">0</span></div>
@@ -136,32 +140,44 @@
     </div>
 
     <script>
-        // ─── ALL JAVASCRIPT (with error display) ───
+        // ─── DOM refs ───
         const proxyInput = document.getElementById('proxyInput');
         const proxyCount = document.getElementById('proxyCount');
         const proxyCountDisplay = document.getElementById('proxyCountDisplay');
         const loadProxiesBtn = document.getElementById('loadProxiesBtn');
         const clearProxiesBtn = document.getElementById('clearProxiesBtn');
+
         const dropZone = document.getElementById('dropZone');
         const fileInput = document.getElementById('fileInput');
         const fileName = document.getElementById('fileName');
         const comboCount = document.getElementById('comboCount');
+
         const startBtn = document.getElementById('startBtn');
         const stopBtn = document.getElementById('stopBtn');
         const exportBtn = document.getElementById('exportBtn');
+        const clearComboBtn = document.getElementById('clearComboBtn'); // নতুন
+
         const progressWrap = document.getElementById('progressWrap');
         const progressBar = document.getElementById('progressBar');
         const progressLabel = document.getElementById('progressLabel');
         const statusMsg = document.getElementById('statusMsg');
+
         const resultsBody = document.getElementById('resultsBody');
         const resultCount = document.getElementById('resultCount');
         const validCount = document.getElementById('validCount');
         const invalidCount = document.getElementById('invalidCount');
         const goldCount = document.getElementById('goldCount');
 
-        let proxies = [], combos = [], results = [];
-        let isRunning = false, shouldStop = false, currentIndex = 0, totalCombos = 0;
+        // ─── State ───
+        let proxies = [];
+        let combos = [];
+        let results = [];
+        let isRunning = false;
+        let shouldStop = false;
+        let currentIndex = 0;
+        let totalCombos = 0;
 
+        // ─── UI helpers ───
         function updateProxyUI() { const n=proxies.length; proxyCount.textContent=n; proxyCountDisplay.textContent=n; }
         function updateComboUI() { comboCount.textContent = combos.length; }
         function updateResultsUI() {
@@ -194,6 +210,7 @@
             updateResultsUI();
         }
 
+        // ─── Proxy handlers ───
         loadProxiesBtn.addEventListener('click',()=>{
             const lines=proxyInput.value.split('\n').map(s=>s.trim()).filter(s=>s.length>0);
             proxies=lines; updateProxyUI();
@@ -202,6 +219,7 @@
         clearProxiesBtn.addEventListener('click',()=>{ proxyInput.value=''; proxies=[]; updateProxyUI(); try{localStorage.removeItem('faphouse_proxies');}catch(_){} });
         try{ const saved=localStorage.getItem('faphouse_proxies'); if(saved){ const p=JSON.parse(saved); if(Array.isArray(p)&&p.length){ proxies=p; proxyInput.value=p.join('\n'); updateProxyUI(); } } }catch(_){}
 
+        // ─── Combo handlers ───
         dropZone.addEventListener('click',()=>fileInput.click());
         dropZone.addEventListener('dragover',(e)=>{e.preventDefault(); dropZone.style.borderColor='#f7971e'; dropZone.style.background='#0f1a2a';});
         dropZone.addEventListener('dragleave',()=>{ dropZone.style.borderColor='#2a3a50'; dropZone.style.background='#0d1520';});
@@ -231,6 +249,35 @@
         }
         try{ const saved=localStorage.getItem('faphouse_combos'); const fname=localStorage.getItem('faphouse_combo_filename'); if(saved){ const c=JSON.parse(saved); if(Array.isArray(c)&&c.length){ combos=c; updateComboUI(); if(fname) fileName.textContent=fname; } } }catch(_){}
 
+        // ─── ✨ Combo Clear Handler (ঠিক proxy clear এর মত) ───
+        clearComboBtn.addEventListener('click', ()=>{
+            combos = [];
+            updateComboUI();
+            fileName.textContent = 'No file selected';
+            // localStorage থেকে মুছে ফেলি
+            try {
+                localStorage.removeItem('faphouse_combos');
+                localStorage.removeItem('faphouse_combo_filename');
+            } catch(_) {}
+            // চাইলে results ও ক্লিয়ার করতে পারেন, কিন্তু proxy clear করে results থাকে না – আমরা রেখেছি
+            // কিন্তু combo না থাকলে results অর্থহীন, তাই আমরা results ও ক্লিয়ার করছি
+            results = [];
+            renderResults();
+            // progress বার রিসেট
+            progressBar.style.width = '0%';
+            progressLabel.textContent = '0 / 0';
+            statusMsg.textContent = 'Idle';
+            progressWrap.classList.remove('active');
+            // start/stop বাটন রিসেট
+            if(isRunning) {
+                isRunning = false;
+                shouldStop = true;
+            }
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+        });
+
+        // ─── Start / Stop ───
         startBtn.addEventListener('click',startChecking);
         stopBtn.addEventListener('click',()=>{ shouldStop=true; });
 
@@ -277,7 +324,6 @@
                 const data=await resp.json();
                 let statusText = data.success ? 'valid' : 'invalid';
                 let errorMsg = data.error || '';
-                // যদি debug থাকে, সেখান থেকে আরও বিস্তারিত বার্তা বের করি
                 if(data.debug){
                     if(data.debug.loginData && data.debug.loginData.message){
                         errorMsg += ' (server: '+data.debug.loginData.message+')';
@@ -299,6 +345,7 @@
 
         function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 
+        // ─── Export ───
         exportBtn.addEventListener('click',()=>{
             if(results.length===0) return;
             let text='Username\tPassword\tStatus\tGold\n';
@@ -308,6 +355,7 @@
             const a=document.createElement('a'); a.href=url; a.download=`faphouse_results_${Date.now()}.txt`; a.click(); URL.revokeObjectURL(url);
         });
 
+        // ─── Init ───
         updateProxyUI(); updateComboUI(); renderResults();
         document.addEventListener('keydown',(e)=>{ if((e.ctrlKey||e.metaKey)&&e.key==='Enter'){ if(!startBtn.disabled) startBtn.click(); } });
         console.log('🔧 Faphouse Combo Checker ready');
